@@ -4,115 +4,104 @@
 
 ---
 
-**Họ Tên:** _<Họ Tên>_
-**Cohort:** _<A20-K1 / A20-K2 / ...>_
-**Ngày submit:** _<YYYY-MM-DD>_
+**Họ Tên:** _Nguyễn Việt Trung_
+**Cohort:** _A20-K1_
+**Ngày submit:** _2026-05-06_
 
 ---
 
 ## 1. Hardware spec (từ `00-setup/detect-hardware.py`)
 
-> Paste output của `python 00-setup/detect-hardware.py` vào đây, hoặc điền thủ công:
+- **OS:** macOS Darwin 25.0.0 (arm64)
+- **CPU:** Apple M1 Pro
+- **Cores:** 10 physical / 10 logical
+- **CPU extensions:** ARM NEON (Apple Silicon)
+- **RAM:** 16.0 GB
+- **Accelerator:** Apple Metal (Apple Silicon unified memory)
+- **llama.cpp backend đã chọn:** Metal (`-DGGML_METAL=on`)
+- **Recommended model tier:** Llama-3.2-3B-Instruct (Q4_K_M)
 
-- **OS:** _<macOS 14 / Windows 11 / Ubuntu 24.04 / ...>_
-- **CPU:** _<Apple M2 / Intel i7-12700H / AMD Ryzen 7 5800H / ...>_
-- **Cores:** _<physical / logical>_
-- **CPU extensions:** _<AVX2 / AVX-512 / NEON / —>_
-- **RAM:** _<GB>_
-- **Accelerator:** _<NVIDIA RTX 4060 8GB / Apple Metal / AMD ROCm / Vulkan / CPU only>_
-- **llama.cpp backend đã chọn:** _<CUDA / Metal / Vulkan / CPU>_
-- **Recommended model tier:** _<TinyLlama-1.1B / Qwen2.5-1.5B / Llama-3.2-3B / Qwen2.5-7B>_
-
-**Setup story** (≤ 80 chữ): những gì cần thay đổi để lab chạy được trên máy bạn (vd: dùng WSL2, install CUDA Toolkit, fall back sang Vulkan vì ROCm phiên bản kén, tắt antivirus để pip install nhanh hơn, v.v.):
-
-_Answer here._
+**Setup story:** Môi trường macOS arm64 với Python 3.11 từ Homebrew. Vấn đề duy nhất: virtualenv ban đầu được tạo với Python 3.9, dẫn đến `llama_cpp` không import được khi chạy `python`. Fix bằng cách rebuild venv với Python 3.11 và cài lại `llama-cpp-python` với `CMAKE_ARGS="-DGGML_METAL=on"`. Dùng `llama-server` từ Homebrew thay vì build từ source vì đã có Metal backend sẵn.
 
 ---
 
 ## 2. Track 01 — Quickstart numbers (từ `benchmarks/01-quickstart-results.md`)
 
-> Paste bảng từ `benchmarks/01-quickstart-results.md` xuống đây (auto-generated bởi `python 01-llama-cpp-quickstart/benchmark.py`).
+Settings: `n_threads=10`, `n_ctx=2048`, `n_batch=512`, `n_gpu_layers=99`.
 
-| Model | Load (ms) | TTFT P50/P95 (ms) | TPOT P50/P95 (ms) | E2E P50/P95/P99 (ms) | Decode rate (tok/s) |
-|---|--:|--:|--:|--:|--:|
-| (Q4_K_M) | | | | | |
-| (Q2_K)   | | | | | |
+| Model                             | Load (ms) | TTFT P50/P95 (ms) | TPOT P50/P95 (ms) |  E2E P50/P95/P99 (ms) | Decode rate (tok/s) |
+| --------------------------------- | --------: | ----------------: | ----------------: | --------------------: | ------------------: |
+| Llama-3.2-3B-Instruct-Q4_K_M.gguf |    12,017 |          68 / 175 |       18.6 / 18.8 | 1,244 / 1,343 / 1,354 |                53.7 |
+| Llama-3.2-3B-Instruct-IQ3_M.gguf  |     1,109 |          70 / 105 |       18.2 / 18.3 | 1,217 / 1,258 / 1,276 |                54.9 |
 
-**Một quan sát** (≤ 50 chữ): Q4_K_M vs Q2_K trên máy bạn — số liệu nói gì? Quality đáng đánh đổi không?
-
-_Answer here._
+**Quan sát:** TPOT gần như bằng nhau (18.6 vs 18.2 ms) giữa Q4_K_M và IQ3_M — dấu hiệu điển hình của memory-bandwidth bottleneck trên Metal: decode speed bị giới hạn bởi băng thông unified memory của M1 Pro, không phải bởi kích thước weight. Sự khác biệt đáng kể nhất là load time (12,017 ms vs 1,109 ms — chênh 11×) và TTFT P95 (175 ms vs 105 ms). IQ3_M tiết kiệm 0.4 GB RAM và load nhanh hơn nhiều, với đánh đổi chính là chất lượng output, không phải latency.
 
 ---
 
 ## 3. Track 02 — llama-server load test
 
-> Chạy 2 lần locust ở concurrency 10 và 50, paste tóm tắt bên dưới.
+Server config: `llama-server -ngl 99 --parallel 4 --cont-batching --metrics --ctx-size 4096`
 
 | Concurrency | Total RPS | TTFB P50 (ms) | E2E P95 (ms) | E2E P99 (ms) | Failures |
-|--:|--:|--:|--:|--:|--:|
-| 10 | | | | | |
-| 50 | | | | | |
+| ----------: | --------: | ------------: | -----------: | -----------: | -------: |
+|          10 |      1.08 |         7,500 |       11,000 |       13,000 |        0 |
+|          50 |      0.95 |        21,000 |       39,000 |       40,000 |        0 |
 
-**KV-cache observation** (từ `record-metrics.py`): peak `llamacpp:kv_cache_usage_ratio` ở concurrency 50 = _<0.XX>_, nghĩa là …
-
-_Answer here._
+**KV-cache observation:** Metric `llamacpp:kv_cache_usage_ratio` không có trong Homebrew build (v9020). Dùng proxy metric `llamacpp:n_busy_slots_per_decode = 3.74` dưới 10-user load — tức **93.5% slot utilization** (4 slots được cấu hình). Khi tăng lên 50 users, median latency tăng từ 7.5s lên 21s vì toàn bộ 4 slots bão hòa và request phải queue. RPS gần như không tăng (1.08 → 0.95) — bottleneck là GPU compute, không phải network hay concurrency overhead.
 
 ---
 
 ## 4. Track 03 — Milestone integration
 
-- **N16 (Cloud/IaC):** _<piece you connected — k3d cluster / GCP project / docker-compose / "stub: localhost only">_
-- **N17 (Data pipeline):** _<piece — Airflow DAG / batch job / "stub: in-memory dict">_
-- **N18 (Lakehouse):** _<piece — Delta Lake table / Iceberg / "stub: SQLite">_
-- **N19 (Vector + Feature Store):** _<piece — Qdrant index / Feast / "stub: TOY_DOCS">_
+- **N16 (Cloud/IaC):** stub — localhost only, không kết nối cluster
+- **N17 (Data pipeline):** stub — in-memory list thay Airflow DAG
+- **N18 (Lakehouse):** stub — `TOY_DOCS` Python list thay Delta Lake / Iceberg
+- **N19 (Vector + Feature Store):** stub — keyword overlap scoring thay embedding index (Qdrant/Feast)
 
-**Nơi tốn nhiều ms nhất** trong pipeline (đo bằng `time.perf_counter` trong `pipeline.py`):
+**Nơi tốn nhiều ms nhất** trong pipeline:
 
-- embed: _<ms>_
-- retrieve: _<ms>_
-- llama-server: _<ms>_
+- embed/retrieve: ~0.0 ms (toy keyword search trong memory, không có I/O)
+- llama-server: 1,003 – 3,429 ms (toàn bộ thời gian nằm ở đây)
 
-**Reflection** (≤ 60 chữ): bottleneck nằm ở đâu? Có khớp với kỳ vọng không?
-
-_Answer here._
+**Reflection:** Bottleneck hoàn toàn nằm ở LLM inference, đúng kỳ vọng. Retrieval 0ms vì dùng toy in-memory search — trong production với vector DB thực (Qdrant, Pinecone) retrieval sẽ tốn 10–100ms nhưng vẫn nhỏ hơn nhiều so với LLM call. Query đầu tiên (goodput vs throughput) trả lời sai vì keyword overlap giữa query và TOY_DOCS thấp — retrieval trả về wrong contexts, minh họa rõ lý do cần embedding-based retrieval trong production.
 
 ---
 
 ## 5. Bonus — The single change that mattered most
 
-> **Most important section.** Pick **một** thay đổi từ bonus track (build flag, thread sweep, quant pick, GPU offload, KV-cache quantization, speculative decoding, bất cứ challenge nào trong `BONUS-llama-cpp-optimization/CHALLENGES.md`) đã tạo ra speedup lớn nhất trên máy bạn.
+**Change:** Thread count sweep với Metal backend (`-ngl 99`) — test `-t 1, 2, 5, 10, 20` trên Llama-3.2-3B-Instruct Q4_K_M.
 
-**Change:** _<vd: rebuild llama.cpp với `-DGGML_NATIVE=ON -DGGML_BLAS=ON`; vd: hạ `-t` từ 12 xuống 6; vd: bật Metal trên M2>_
-
-**Before vs after** (paste 2-3 dòng từ sweep output):
+**Before vs after** (từ `benchmarks/bonus-thread-sweep.md`):
 
 ```
-before: <số liệu>
-after:  <số liệu>
-speedup: ~<X.Y>×
+t=  1  →  54.6 tok/s
+t=  2  →  54.7 tok/s
+t=  5  →  50.9 tok/s
+t= 10  →  53.9 tok/s
+t= 20  →  54.7 tok/s
 ```
 
-**Tại sao nó work** (1–2 đoạn ngắn — đây là phần grader đọc kỹ nhất):
+**Tại sao kết quả flat — và đây là insight quan trọng:**
 
-_Giải thích như đang nói với một bạn cùng lớp đang ngồi cạnh. Tránh "vibes-based" reasoning — bám vào mô hình mental của hardware (memory bandwidth? compute? cache?). Nếu kết quả khác kỳ vọng từ deck, nói rõ — đó là phần grader thưởng điểm._
+Curve hoàn toàn flat (~54 tok/s bất kể 1 hay 20 threads) vì với `-ngl 99`, **toàn bộ model được offload lên Metal GPU**. CPU threads chỉ xử lý orchestration overhead — memory copy, tokenization, sampling — trong khi 99% compute (matrix multiply trên attention layers) chạy trên GPU cores của M1 Pro. Băng thông bộ nhớ GPU (unified memory ~200 GB/s trên M1 Pro) là ceiling thực sự, không phải số lượng CPU threads.
+
+Điều này khác với CPU-only setup nơi thread count sweep thường cho bell curve rõ ràng: tăng đến physical core count thì peak, rồi drop khi hyperthreads tranh giành memory bandwidth. Trên Metal, tuning knob quan trọng là số GPU layers (`-ngl`), không phải `-t`. Kết quả này khớp với deck §3: **hardware-matched kernels** (Metal trên Apple Silicon) loại bỏ hoàn toàn CPU-side bottleneck, và "production tuning" trên laptop Apple Silicon nên tập trung vào quantization và context size thay vì thread count.
 
 ---
 
-## 6. (Optional) Điều ngạc nhiên nhất
+## 6. Điều ngạc nhiên nhất
 
-_(1–2 câu — không bắt buộc, nhưng người grader đọc tất cả)_
-
-_Answer here._
+Thread sweep hoàn toàn flat khi dùng Metal — ban đầu tôi kỳ vọng sẽ thấy bell curve như deck mô tả, nhưng hóa ra CPU threads irrelevant khi GPU đã handle toàn bộ compute. Điều này làm rõ rằng "tuning" phụ thuộc rất nhiều vào hardware path — knob quan trọng trên CPU-only machine (thread count) hoàn toàn vô nghĩa trên GPU-accelerated machine.
 
 ---
 
 ## 7. Self-graded checklist
 
-- [ ] `hardware.json` đã commit
-- [ ] `models/active.json` đã commit (hoặc paste path snapshot vào section 1)
-- [ ] `benchmarks/01-quickstart-results.md` đã commit
-- [ ] `benchmarks/02-server-results.md` (hoặc CSV từ `record-metrics.py`) đã commit
-- [ ] `benchmarks/bonus-*.md` đã commit (ít nhất 1 sweep)
+- [x] `hardware.json` đã commit
+- [x] `models/active.json` đã commit (hoặc paste path snapshot vào section 1)
+- [x] `benchmarks/01-quickstart-results.md` đã commit
+- [x] `benchmarks/02-server-results.md` đã commit
+- [x] `benchmarks/bonus-thread-sweep.md` đã commit (ít nhất 1 sweep)
 - [ ] Ít nhất 6 screenshots trong `submission/screenshots/` (xem `submission/screenshots/README.md`)
 - [ ] `make verify` exit 0 (chạy ngay trước khi push)
 - [ ] Repo trên GitHub ở chế độ **public**
